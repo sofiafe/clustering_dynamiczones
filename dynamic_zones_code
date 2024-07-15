@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+
+import pandas as pd
+import numpy as np
+from kneed import KneeLocator
+from sklearn.datasets import make_blobs
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler
+from mplsoccer import Pitch, Sbopen
+import matplotlib.pyplot as plt
+from matplotlib import animation
+
+
+# Data upload
+events= pd.read_excel(
+    '/Users/sofia/Documents/02_Faculdade/Dados FIFA/20230222_FU20WWC_Q_05_POR-CMR_FIFA_Unified_Event_Data_Events.xlsx')
+
+read_file = pd.read_csv(
+    '/Users/sofia/Documents/02_Faculdade/Dados FIFA/TRACKING_DATA_20230222_POR-CMR/134765.dat', sep='[:;,]', header=None)
+
+read_file.to_csv('/Users/sofia/Documents/02_Faculdade/Dados FIFA/TRACKING_DATA_20230222_POR-CMR/tracking.csv')
+
+
+import json
+
+with open('/Users/sofia/Documents/02_Faculdade/Dados FIFA/TRACKING_DATA_20230222_POR-CMR/134765_metadata.json') as json_file:
+    metadata = json.load(json_file)
+    
+    
+
+#%% Events file treatment
+#Selecting events
+# Converting coordinates
+passes = events[(events['event'] == "pass")]
+passes['x_start_corrected']= passes['x_location_start_mirrored'].apply(lambda x: x*10500+(-5250))
+passes['y_start_corrected']= passes['y_location_start_mirrored'].apply(lambda x: x*6800+(-3400))
+passes['x_end_corrected']= passes['x_location_end_mirrored'].apply(lambda x: x*10500+(-5250))
+passes['y_end_corrected']= passes['y_location_end_mirrored'].apply(lambda x: x*6800+(-3400))
+
+lb_complete = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_complete")]
+lb_complete_around = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_complete") & (passes['line_break_direction'] == "around")]
+lb_complete_through = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_complete") & (passes['line_break_direction'] == "through")]
+lb_complete_over = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_complete") & (passes['line_break_direction'] == "over")]
+lb_incomplete = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_incomplete")]
+lb_incomplete_over = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_incomplete") & (passes['line_break_direction'] == "over")]
+lb_incomplete_around = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_incomplete") & (passes['line_break_direction'] == "around")]
+lb_incomplete_through = passes[(passes['team_name'] == "PORTUGAL") & (passes['line_break_outcome'] == "line_break_incomplete") & (passes['line_break_direction'] == "through")]
+
+
+#%% Tracking file treatment
+
+l = pd.Series(range(0, len(read_file)//25,1))
+s = pd.DataFrame(l)
+s.columns = ['seconds']
+s_new = pd.DataFrame(np.repeat(s.values, 25, axis=0))
+df = read_file.merge(s_new, how='left', left_index=True, right_index=True)
+df.rename(columns = {'0_y':'seconds'}, inplace = True)
+df['seconds'] = df['seconds']*1000
+
+#Select only the seconds for a specific line breaking event
+
+t1 = 1717000
+t2 = 1721000
+
+df_lb = df[(df['seconds'] >= t1) & (df['seconds'] <= t2)]
+
+#Check who the players are from "away team"
+
+players_c = pd.Series(range(1,170,6))
+
+for players in players_c:
+       df_lb_a = df_lb[(df_lb.iloc[:, players_c] == 0)]
+       
+df_lba_ = pd.DataFrame(df_lb_a[df_lb_a.isin([0])].stack()).reset_index() 
+columns_a = df_lba_.iloc[0:11,1] 
+columns_adf = pd.DataFrame(columns_a)
+columns_adf['jersey'] = columns_adf.iloc[:,0]+2
+columns_adf['cx'] = columns_adf.iloc[:,0]+3
+columns_adf['cy'] = columns_adf.iloc[:,0]+4
+
+
+jersey_a = pd.DataFrame()
+for jersey in columns_adf['jersey']:
+    jersey_a[jersey] = df_lb.iloc[:, jersey]
+nb_jersey_a = jersey_a.iloc[1,:]
+nb_jersey_a.name = 'jersey'
+        
+
+
+xlba = pd.DataFrame()
+xlba['frame'] = df_lb.iloc[:, 0]
+
+for players in columns_adf['cx']:
+    xlba[players] = df_lb.iloc[:, players]
+    
+xlba.columns = ['frame', nb_jersey_a.iloc[0], nb_jersey_a.iloc[1], nb_jersey_a.iloc[2], nb_jersey_a.iloc[3], nb_jersey_a.iloc[4], nb_jersey_a.iloc[5],
+                nb_jersey_a.iloc[6], nb_jersey_a.iloc[7], nb_jersey_a.iloc[8], nb_jersey_a.iloc[9], nb_jersey_a.iloc[10]]
+
+ylba = pd.DataFrame()
+ylba['frame'] = df_lb.iloc[:, 0]
+
+for players in columns_adf['cy']:
+    ylba[players] = df_lb.iloc[:, players]  
+
+ylba.columns = ['frame', nb_jersey_a.iloc[0], nb_jersey_a.iloc[1], nb_jersey_a.iloc[2], nb_jersey_a.iloc[3], nb_jersey_a.iloc[4], nb_jersey_a.iloc[5],
+                nb_jersey_a.iloc[6], nb_jersey_a.iloc[7], nb_jersey_a.iloc[8], nb_jersey_a.iloc[9], nb_jersey_a.iloc[10]]
+
+
+jogadoras_a_x = pd.melt(xlba, id_vars=["frame"], var_name='jogadores')
+jogadoras_a_x = jogadoras_a_x.sort_values(by=['frame'])
+jogadoras_a_y = pd.melt(ylba, id_vars=["frame"], var_name='jogadores')
+jogadoras_a_y = jogadoras_a_y.sort_values(by=['frame'])
+
+#Check who the players are from "home team"
+
+for players in players_c:
+       df_lb_h = df_lb[(df_lb.iloc[:, players_c] == 1)]
+       
+df_lbh_ = pd.DataFrame(df_lb_h[df_lb_h.isin([1])].stack()).reset_index() 
+columns_h = df_lbh_.iloc[0:11,1] 
+columns_hdf = pd.DataFrame(columns_h)
+columns_hdf['jersey'] = columns_hdf.iloc[:,0]+2
+columns_hdf['cx'] = columns_hdf.iloc[:,0]+3
+columns_hdf['cy'] = columns_hdf.iloc[:,0]+4
+
+
+jersey_h = pd.DataFrame()
+for jersey in columns_hdf['jersey']:
+    jersey_h[jersey] = df_lb.iloc[:, jersey]
+nb_jersey_h = jersey_h.iloc[1,:]
+nb_jersey_h.name = 'jersey'
+
+
+xlbh = pd.DataFrame()
+xlbh['frame'] = df_lb.iloc[:, 0]
+
+for players in columns_hdf['cx']:
+    xlbh[players] = df_lb.iloc[:, players]
+    
+xlbh.columns = ['frame', nb_jersey_h.iloc[0], nb_jersey_h.iloc[1], nb_jersey_h.iloc[2], nb_jersey_h.iloc[3], nb_jersey_h.iloc[4], nb_jersey_h.iloc[5],
+                nb_jersey_h.iloc[6], nb_jersey_h.iloc[7], nb_jersey_h.iloc[8], nb_jersey_h.iloc[9], nb_jersey_h.iloc[10]]
+
+
+ylbh = pd.DataFrame()
+ylbh['frame'] = df_lb.iloc[:, 0]
+
+for players in columns_hdf['cy']:
+    ylbh[players] = df_lb.iloc[:, players]  
+
+ylbh.columns = ['frame', nb_jersey_h.iloc[0], nb_jersey_h.iloc[1], nb_jersey_h.iloc[2], nb_jersey_h.iloc[3], nb_jersey_h.iloc[4], nb_jersey_h.iloc[5],
+                nb_jersey_h.iloc[6], nb_jersey_h.iloc[7], nb_jersey_h.iloc[8], nb_jersey_h.iloc[9], nb_jersey_h.iloc[10]]
+
+
+#Manage table structure for x coordinate
+jogadores_x = pd.melt(xlbh, id_vars=["frame"], var_name='jogadores')
+jogadores_x = jogadores_x.sort_values(by=['frame'])
+
+#Manage table structure for y coordinate
+jogadores_y = pd.melt(ylbh, id_vars=["frame"], var_name='jogadores')
+jogadores_y = jogadores_y.sort_values(by=['frame'])
+
+#Create a file for the ball
+bxlb = df_lb.iloc[:, [0, 176]]
+bylb = df_lb.iloc[:, [0, 177]]
+
+#Create an animation for the selected line breaking event
+pitch = Pitch(pitch_type='tracab', pitch_color='grass', line_color='white', # example plotting a tracab pitch
+              stripe= True, pitch_length=105, pitch_width=68,
+              axis=True, label=True)  # showing axis labels is optional
+fig, ax = pitch.draw()
+
+marker_kwargs = {'marker': 'o', 'markeredgecolor': 'black', 'linestyle': 'None'}
+ball, = ax.plot([], [], ms=6, markerfacecolor='w', zorder=3, **marker_kwargs)
+away, = ax.plot([], [], ms=8, markerfacecolor='#ffff00', **marker_kwargs)  # yellow
+home, = ax.plot([], [], ms=8, markerfacecolor='#120a8f', **marker_kwargs)  # blue
+
+
+def animate(i):
+    """ Function to animate the data. Each frame it sets the data for the players and the ball."""
+    # set the ball data with the x and y positions for the ith frame
+    ball.set_data(bxlb.iloc[i, 1], bylb.iloc[i, 1])
+    # get the frame id for the ith frame
+    time = bxlb.iloc[i, 0]
+    # set the player data using the frame id
+    away.set_data(jogadoras_a_x.loc[jogadoras_a_x.frame == time, 'value'],
+               jogadoras_a_y.loc[jogadoras_a_y.frame == time, 'value'])
+    home.set_data(jogadores_x.loc[jogadores_x.frame == time, 'value'],
+               jogadores_y.loc[jogadores_y.frame == time, 'value'])
+    return ball, away, home
+
+
+anim = animation.FuncAnimation(fig, animate, frames=len(bxlb), interval=50, blit=True)
+plt.show()
+
+
+f = ("/Users/sofia/Documents/02_Faculdade/Dados FIFA/animation_2_new.mp4")
+writervideo = animation.FFMpegWriter(fps=25) 
+anim.save(f, writer=writervideo)
+
+#%% Cálculo do passe médio por jogadora
+# Seleccionar apenas os eventos da equipa portuguesa
+passes_por = passes[(passes['team_name'] == "PORTUGAL")]
+
+
+
+# Create a file only with the x and y with all the players for a specific selected frame
+
+f=1798060
+
+todas_jogadoras_x = jogadores_x[(jogadores_x['frame']) == f]
+jogadoras_a_x_lb = jogadoras_a_x[(jogadoras_a_x['frame']) == f]
+todas_jogadoras_x = todas_jogadoras_x.append(jogadoras_a_x_lb)
+todas_jogadoras_x = todas_jogadoras_x.reset_index()
+todas_jogadoras_x = todas_jogadoras_x.drop(['index','frame','jogadores'], axis=1)
+todas_jogadoras_x.columns = ['x']
+
+todas_jogadoras_y = jogadores_y[(jogadores_y['frame']) == f]
+jogadoras_a_y_lb = jogadoras_a_y[(jogadoras_a_y['frame']) == f]
+todas_jogadoras_y = todas_jogadoras_y.append(jogadoras_a_y_lb)
+todas_jogadoras_y = todas_jogadoras_y.reset_index()
+todas_jogadoras_y = todas_jogadoras_y.drop(['index','frame','jogadores'], axis=1)
+todas_jogadoras_y.columns = ['y']
+
+coordenadas = pd.concat([todas_jogadoras_x, todas_jogadoras_y], axis=1)
+
+#%% Clustering 
+
+import pandas as pd
+import numpy as np
+from matplotlib import pyplot as plt
+from sklearn.cluster import AgglomerativeClustering
+import scipy.cluster.hierarchy as sch
+from scipy.cluster import hierarchy
+from scipy.spatial import ConvexHull, convex_hull_plot_2d
+
+#Create the dendogram and generate the agglomerative clustering 
+
+coordenadas = pd.concat([todas_jogadoras_x, todas_jogadoras_y], axis=1)
+dendrogram = sch.dendrogram(sch.linkage(coordenadas, method='ward'))
+model = AgglomerativeClustering(n_clusters=6, affinity='euclidean', linkage='ward')
+model.fit(coordenadas)
+labels_model = model.labels_
+coordenadas['labels']=labels_model 
+count_jog_cluster = coordenadas.groupby('labels')['x'].count()
+
+
+
+#% Create the player references to put in the figure for that specific line breaking event
+jogadoras_x_lb = jogadores_x[(jogadores_x['frame']) == f]
+jogadoras_y_lb = jogadores_y[(jogadores_y['frame']) == f]
+
+bxlb_subset = bxlb[(bxlb['0_x']) == f]
+bylb_subset = bylb[(bylb['0_x']) == f]
+
+x_jog_from = df_lb.iloc[:, [0, 28]]
+x_jog_from = x_jog_from[(x_jog_from['0_x']) == f]
+y_jog_from = df_lb.iloc[:, [0, 29]]
+y_jog_from = y_jog_from[(y_jog_from['0_x']) == f]
+
+
+x_jog_to = df_lb.iloc[:, [0, 94]]
+x_jog_to = x_jog_to[(x_jog_to['0_x']) == f]
+y_jog_to = df_lb.iloc[:, [0, 95]]
+y_jog_to = y_jog_to[(y_jog_to['0_x']) == f]
+
+
+jogadoras_a_xy_lb = pd.concat([jogadoras_a_x_lb, jogadoras_a_y_lb], axis=1, join="inner")
+jogadoras_a_xy_lb.columns = ['frame', 'jogadores_x', 'value_x', 'frame_y', 'jogadores_y', 'value_y']
+
+jogadoras_xy_lb = pd.concat([jogadoras_x_lb, jogadoras_y_lb], axis=1, join="inner")
+jogadoras_xy_lb.columns = ['frame', 'jogadores_x', 'value_x', 'frame_y', 'jogadores_y', 'value_y']
+
+#%% Density zone created with the players  
+
+pitch = Pitch(pitch_type='tracab', pitch_color='#EBEBEB', line_color='white', # example plotting a tracab pitch
+              stripe= False, pitch_length=105, pitch_width=68,
+              axis=False, label=False)  # showing axis labels is optional
+fig, ax = pitch.draw()
+
+
+
+scatter1 = pitch.scatter(jogadoras_a_x_lb.iloc[:, 2], jogadoras_a_y_lb.iloc[:, 2],
+                        ax=ax, edgecolor="#C0C0C0", facecolor="#C0C0C0", s=180)
+scatter2 = pitch.scatter(jogadoras_x_lb.iloc[:, 2], jogadoras_y_lb.iloc[:, 2],
+                        ax=ax, edgecolor="#942193", facecolor="#942193", s=180)
+
+
+for index, row in jogadoras_a_xy_lb.iterrows():
+    pitch.annotate(row.jogadores_x, xy=(row.value_x,row.value_y), c='black', va='center',
+                   ha='center', weight= 'bold', size=7, ax=ax)
+    
+for index, row in jogadoras_xy_lb.iterrows():
+    pitch.annotate(row.jogadores_x, xy=(row.value_x,row.value_y), c='white', va='center',
+                   ha='center', weight= 'bold', size=7, ax=ax)
+
+
+scatterball = pitch.scatter(bxlb_subset.iloc[:,1], bylb_subset.iloc[:,1], marker='football', s=100, ax=ax) #, edgecolor= "black", facecolor="white")
+
+c0 = coordenadas.loc[coordenadas["labels"] == 0]
+hull0 = pitch.convexhull(c0.iloc[:, 0], c0.iloc[:, 1])
+poly0 = pitch.polygon(
+    hull0, ax=ax, facecolor="#942193", alpha=0.3)
+
+c1 = coordenadas.loc[coordenadas["labels"] == 1]
+hull0 = pitch.convexhull(c1.iloc[:, 0], c1.iloc[:, 1])
+poly0 = pitch.polygon(
+    hull0, ax=ax, facecolor="#942193", alpha=0.3)
+
+c2 = coordenadas.loc[coordenadas["labels"] == 2]
+hull0 = pitch.convexhull(c2.iloc[:, 0], c2.iloc[:, 1])
+poly0 = pitch.polygon(
+   hull0, ax=ax, facecolor="#942193", alpha=0.3)
+
+c4 = coordenadas.loc[coordenadas["labels"] == 4]
+hull0 = pitch.convexhull(c4.iloc[:, 0], c4.iloc[:, 1])
+poly0 = pitch.polygon(
+    hull0, ax=ax, facecolor="#942193", alpha=0.3)
+
+c6 = coordenadas.loc[coordenadas["labels"] == 6]
+hull0 = pitch.convexhull(c6.iloc[:, 0], c6.iloc[:, 1])
+poly0 = pitch.polygon(
+    hull0, ax=ax, facecolor="#FF2600", alpha=0.3)
+
+
+#%% Calculate cluster properties
+
+#Area
+
+points0 = c0.iloc[:, [0,1]]
+h0 = ConvexHull(points0)
+area0 = h0.area
+
+points1 = c1.iloc[:, [0,1]]
+h1 = ConvexHull(points1)
+area1 = h1.area
+
+points2 = c2.iloc[:, [0,1]]
+h2 = ConvexHull(points2)
+area2 = h2.area
+
+points3 = c3.iloc[:, [0,1]]
+h3 = ConvexHull(points3)
+area3 = h3.area
+
+points8 = c8.iloc[:, [0,1]]
+h8 = ConvexHull(points8)
+area8 = h8.area
+
+points4 = c4.iloc[:, [0,1]]
+h4 = ConvexHull(points4)
+area4 = h4.area
+
+points5 = c5.iloc[:, [0,1]]
+h5 = ConvexHull(points5)
+area5 = h5.area
+
+area_f5 = [area0,area1,area3]#,area4,area5]
+
+#Cluster' players ratio 
+
+new_jogadoras_a_x_lb = jogadoras_a_x_lb.merge(coordenadas, left_on='value', right_on='x')
+new_jogadoras_x_lb = jogadoras_x_lb.merge(coordenadas, left_on='value', right_on='x')
+
+count_playersa_cluster = new_jogadoras_a_x_lb.groupby('labels')['value'].count()
+count_playersa_cluster = pd.DataFrame(count_playersa_cluster).reset_index()
+count_playersa_cluster.columns = ['cluster', 'nr_players_away']
+count_players_cluster = new_jogadoras_x_lb.groupby('labels')['value'].count()
+count_players_cluster = pd.DataFrame(count_players_cluster).reset_index()
+count_players_cluster.columns = ['cluster', 'nr_players_home']
+
+racio_f5=  count_playersa_cluster.merge(count_players_cluster, how='outer', left_on='cluster', right_on='cluster')
+racio_f5['nr_players_home'] = racio_f5['nr_players_home'].astype(float)
+racio_f5['racio'] = racio_f5.iloc[:,2]/racio_f5.iloc[:,1]
+
+
+#Create an area graph
+
+area_f1= pd.DataFrame(area_f1).reset_index()
+
+area_f = area_f.merge(area_f6, how='outer', left_on='index', right_on='index')
+area_f.columns = ['cluster', 'LBC1', 'LBC2', 'LBC3', 'LBC4', 'LBC5', 'LBC6']
+
+area_f = area_f.T
+area = pd.melt(area_f, id_vars=["cluster"], var_name='LBC')
+#jogadores_y = jogadores_y.sort_values(by=['frame'])
+
+
+import seaborn as sns
+sns.set_theme(style="whitegrid")
+
+
+# Draw a nested barplot by species and sex
+g = sns.catplot(
+    data=area, kind="bar",
+    x="LBC", y="value", hue="cluster",
+    #errorbar="sd", 
+    palette="dark", alpha=.9, height=6
+)
+g.despine(left=True)
+g.set_axis_labels("", "Area")
+g.legend.set_title("")
+
+
